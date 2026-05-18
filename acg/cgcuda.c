@@ -723,17 +723,17 @@ int acgsolvercuda_solvempi(
 
     /* compute right-hand side norm */
     double bnrm2sqr;
-    acgEventRecord(tnrm2[2*nnrm2+0], 0);
+    acgEventRecord(tnrm2[2*nnrm2+0], stream);
     err = cublasDdot(cublas, b->num_nonzeros-b->num_ghost_nonzeros, d_b, 1, d_b, 1, d_bnrm2sqr);
     if (err) { if (errcode) *errcode = err; gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUBLAS; }
-    acgEventRecord(tnrm2[2*nnrm2+1], 0); nnrm2++; cg->nnrm2++;
+    acgEventRecord(tnrm2[2*nnrm2+1], stream); nnrm2++; cg->nnrm2++;
     cg->nflops += 2*(b->num_nonzeros-b->num_ghost_nonzeros);
     cg->Bnrm2 += (b->num_nonzeros-b->num_ghost_nonzeros)*sizeof(*b->x);
     if (commsize > 1) {
-        acgEventRecord(tallreduce[2*nallreduce+0], 0);
+        acgEventRecord(tallreduce[2*nallreduce+0], stream);
         err = acgcomm_allreduce(ACG_IN_PLACE, d_bnrm2sqr, 1, ACG_DOUBLE, ACG_SUM, stream, comm, errcode);
         if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return err; }
-        acgEventRecord(tallreduce[2*nallreduce+1], 0); nallreduce++; cg->nallreduce++;
+        acgEventRecord(tallreduce[2*nallreduce+1], stream); nallreduce++; cg->nallreduce++;
         cg->Ballreduce += sizeof(bnrm2sqr);
     }
     err = cudaMemcpy(&bnrm2sqr, d_bnrm2sqr, sizeof(*d_bnrm2sqr), cudaMemcpyDeviceToHost);
@@ -757,10 +757,10 @@ int acgsolvercuda_solvempi(
     /* } */
 
     /* compute initial residual, r₀ = b-A*x₀ */
-    acgEventRecord(tcopy[2*ncopy+0], 0);
+    acgEventRecord(tcopy[2*ncopy+0], stream);
     err = cublasDcopy(cublas, b->num_nonzeros-b->num_ghost_nonzeros, d_b, 1, d_r, 1);
     if (err) { if (errcode) *errcode = err; gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUBLAS; }
-    acgEventRecord(tcopy[2*ncopy+1], 0); ncopy++; cg->ncopy++;
+    acgEventRecord(tcopy[2*ncopy+1], stream); ncopy++; cg->ncopy++;
     cg->Bcopy += (b->num_nonzeros-b->num_ghost_nonzeros)*(sizeof(*cg->r.x)+sizeof(*b->x));
 
     if (commsize > 1) {
@@ -771,21 +771,21 @@ int acgsolvercuda_solvempi(
             comm, tag, errcode, 0, commstream);
         if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return err; }
     }
-    acgEventRecord(tgemv[2*ngemv+0], 0);
+    acgEventRecord(tgemv[2*ngemv+0], stream);
     err = cusparseSpMV(
         cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
         d_minus_one, matA, vecx, d_one, vecr, CUDA_R_64F,
         CUSPARSE_SPMV_ALG_DEFAULT, d_buffer);
     if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); if (errcode) *errcode = err; return ACG_ERR_CUSPARSE; }
     if (commsize > 1) {
-        acgEventRecord(thalo[2*nhalo+0], 0);
+        acgEventRecord(thalo[2*nhalo+0], commstream);
         err = acghalo_exchange_cuda_end(
             cg->halo, cg->haloexchange,
             x->num_nonzeros, d_x, ACG_DOUBLE,
             x->num_nonzeros, d_x, ACG_DOUBLE,
             comm, tag, errcode, 0, commstream);
         if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return err; }
-        acgEventRecord(thalo[2*nhalo+1], 0); nhalo++; cg->nhalo++;
+        acgEventRecord(thalo[2*nhalo+1], commstream); nhalo++; cg->nhalo++;
         cg->Bhalo += cg->halo->sendsize*sizeof(*x->x);
         cg->nhalomsgs += cg->halo->nrecipients;
         err = cudaEventRecord(xreceived, commstream);
@@ -798,7 +798,7 @@ int acgsolvercuda_solvempi(
             CUSPARSE_SPMV_ALG_DEFAULT, d_obuffer);
         if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); if (errcode) *errcode = err; return ACG_ERR_CUSPARSE; }
     }
-    acgEventRecord(tgemv[2*ngemv+1], 0); ngemv++; cg->ngemv++;
+    acgEventRecord(tgemv[2*ngemv+1], stream); ngemv++; cg->ngemv++;
     cg->nflops += 3*(int64_t)(A->fnpnzs+A->onpnzs);
     cg->Bgemv +=
         (int64_t)(A->fnpnzs+A->onpnzs)*(sizeof(*A->fa)+sizeof(*A->fcolidx))
@@ -807,25 +807,25 @@ int acgsolvercuda_solvempi(
         + x->num_nonzeros*sizeof(*x->x);
 
     /* compute initial search direction: p = r₀ */
-    acgEventRecord(tcopy[2*ncopy+0], 0);
+    acgEventRecord(tcopy[2*ncopy+0], stream);
     err = cublasDcopy(cublas, cg->p.num_nonzeros-cg->p.num_ghost_nonzeros, d_r, 1, d_p, 1);
     if (err) { if (errcode) *errcode = err; gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUBLAS; }
-    acgEventRecord(tcopy[2*ncopy+1], 0); ncopy++; cg->ncopy++;
+    acgEventRecord(tcopy[2*ncopy+1], stream); ncopy++; cg->ncopy++;
     cg->Bcopy += (cg->p.num_nonzeros-cg->p.num_ghost_nonzeros)*(sizeof(*cg->p.x)+sizeof(*cg->r.x));
     err = cudaEventRecord(preadytosend, stream); if (err) return ACG_ERR_CUDA;
 
     /* compute initial residual norm */
-    acgEventRecord(tnrm2[2*nnrm2+0], 0);
+    acgEventRecord(tnrm2[2*nnrm2+0], stream);
     err = cublasDdot(cublas, cg->r.num_nonzeros-cg->r.num_ghost_nonzeros, d_r, 1, d_r, 1, d_rnrm2sqr);
     if (err) { if (errcode) *errcode = err; gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUBLAS; }
-    acgEventRecord(tnrm2[2*nnrm2+1], 0); nnrm2++; cg->nnrm2++;
+    acgEventRecord(tnrm2[2*nnrm2+1], stream); nnrm2++; cg->nnrm2++;
     cg->nflops += 2*(cg->r.num_nonzeros-cg->r.num_ghost_nonzeros);
     cg->Bnrm2 += (cg->r.num_nonzeros-cg->r.num_ghost_nonzeros)*sizeof(*cg->r.x);
     if (commsize > 1) {
-        acgEventRecord(tallreduce[2*nallreduce+0], 0);
+        acgEventRecord(tallreduce[2*nallreduce+0], stream);
         err = acgcomm_allreduce(ACG_IN_PLACE, d_rnrm2sqr, 1, ACG_DOUBLE, ACG_SUM, stream, comm, errcode);
         if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return err; }
-        acgEventRecord(tallreduce[2*nallreduce+1], 0); nallreduce++; cg->nallreduce++;
+        acgEventRecord(tallreduce[2*nallreduce+1], stream); nallreduce++; cg->nallreduce++;
         cg->Ballreduce += sizeof(*rnrm2sqr);
     }
     err = cudaMemcpy(rnrm2sqr, d_rnrm2sqr, sizeof(*d_rnrm2sqr), cudaMemcpyDeviceToHost);
@@ -854,21 +854,21 @@ int acgsolvercuda_solvempi(
                 comm, tag, errcode, 0, commstream);
             if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return err; }
         }
-        acgEventRecord(tgemv[2*ngemv+0], 0);
+        acgEventRecord(tgemv[2*ngemv+0], stream);
         err = cusparseSpMV(
             cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
             d_one, matA, vecp, d_zero, vect, CUDA_R_64F,
             CUSPARSE_SPMV_ALG_DEFAULT, d_buffer);
         if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); if (errcode) *errcode = err; return ACG_ERR_CUSPARSE; }
         if (commsize > 1) {
-            acgEventRecord(thalo[2*nhalo+0], 0);
+            acgEventRecord(thalo[2*nhalo+0], commstream);
             err = acghalo_exchange_cuda_end(
                 cg->halo, cg->haloexchange,
                 cg->p.num_nonzeros, d_p, ACG_DOUBLE,
                 cg->p.num_nonzeros, d_p, ACG_DOUBLE,
                 comm, tag, errcode, 0, commstream);
             if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return err; }
-            acgEventRecord(thalo[2*nhalo+1], 0); nhalo++; cg->nhalo++;
+            acgEventRecord(thalo[2*nhalo+1], commstream); nhalo++; cg->nhalo++;
             cg->Bhalo += cg->halo->sendsize*sizeof(*cg->p.x);
             cg->nhalomsgs += cg->halo->nrecipients;
             err = cudaEventRecord(preceived, commstream);
@@ -881,7 +881,7 @@ int acgsolvercuda_solvempi(
                 CUSPARSE_SPMV_ALG_DEFAULT, d_obuffer);
             if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); if (errcode) *errcode = err; return ACG_ERR_CUSPARSE; }
         }
-        acgEventRecord(tgemv[2*ngemv+1], 0); ngemv++; cg->ngemv++;
+        acgEventRecord(tgemv[2*ngemv+1], stream); ngemv++; cg->ngemv++;
         cg->nflops += 3*(int64_t)(A->fnpnzs+A->onpnzs);
         cg->Bgemv +=
             (int64_t)(A->fnpnzs+A->onpnzs)*(sizeof(*A->fa)+sizeof(*A->fcolidx))
@@ -890,14 +890,14 @@ int acgsolvercuda_solvempi(
             + cg->p.num_nonzeros*sizeof(*cg->p.x);
 
         /* compute (p,Ap) */
-        acgEventRecord(tdot[2*ndot+0], 0);
+        acgEventRecord(tdot[2*ndot+0], stream);
         err = cublasDdot(cublas, cg->p.num_nonzeros-cg->p.num_ghost_nonzeros, d_p, 1, d_t, 1, d_pdott);
         if (err) { if (errcode) *errcode = err; gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUBLAS; }
-        acgEventRecord(tdot[2*ndot+1], 0); ndot++; cg->ndot++;
+        acgEventRecord(tdot[2*ndot+1], stream); ndot++; cg->ndot++;
         cg->nflops += 2*(cg->p.num_nonzeros-cg->p.num_ghost_nonzeros);
         cg->Bdot += (cg->p.num_nonzeros-cg->p.num_ghost_nonzeros)*(sizeof(*cg->p.x)+sizeof(*cg->t.x));
         if (commsize > 1) {
-            acgEventRecord(tallreduce[2*nallreduce+0], 0);
+            acgEventRecord(tallreduce[2*nallreduce+0], stream);
 #ifndef HOST_ALLREDUCE
             err = acgcomm_allreduce(ACG_IN_PLACE, d_pdott, 1, ACG_DOUBLE, ACG_SUM, stream, comm, errcode);
             if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return err; }
@@ -907,14 +907,14 @@ int acgsolvercuda_solvempi(
             MPI_Allreduce(MPI_IN_PLACE, &pdott, 1, MPI_DOUBLE, MPI_SUM, comm->mpicomm);
             cudaMemcpy(d_pdott, &pdott, sizeof(*d_pdott), cudaMemcpyHostToDevice);
 #endif
-            acgEventRecord(tallreduce[2*nallreduce+1], 0); nallreduce++; cg->nallreduce++;
+            acgEventRecord(tallreduce[2*nallreduce+1], stream); nallreduce++; cg->nallreduce++;
             cg->Ballreduce += sizeof(*d_pdott);
         }
         err = cudaMemcpyAsync(d_rnrm2sqr_prev, d_rnrm2sqr, sizeof(*d_rnrm2sqr), cudaMemcpyDeviceToDevice, stream);
         if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUDA; }
 
         /* update residual, r = -αt + r */
-        acgEventRecord(taxpy[2*naxpy+0], 0);
+        acgEventRecord(taxpy[2*naxpy+0], stream);
 #ifndef NO_FUSED_KERNELS
         err = acgsolvercuda_daxpy_minus_alpha(cg->t.num_nonzeros-cg->t.num_ghost_nonzeros, d_rnrm2sqr, d_pdott, d_t, d_r);
         if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUDA; }
@@ -924,23 +924,23 @@ int acgsolvercuda_solvempi(
         err = cublasDaxpy(cublas, cg->t.num_nonzeros-cg->t.num_ghost_nonzeros, d_minus_alpha, d_t, 1, d_r, 1);
         if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUBLAS; }
 #endif
-        acgEventRecord(taxpy[2*naxpy+1], 0); naxpy++; cg->naxpy++;
+        acgEventRecord(taxpy[2*naxpy+1], stream); naxpy++; cg->naxpy++;
         cg->nflops += 2*(cg->t.num_nonzeros-cg->t.num_ghost_nonzeros);
         cg->Baxpy += (cg->t.num_nonzeros-cg->t.num_ghost_nonzeros)*(sizeof(*cg->t.x)+sizeof(*cg->r.x));
 
         /* compute residual norm */
-        acgEventRecord(tnrm2[2*nnrm2+0], 0);
+        acgEventRecord(tnrm2[2*nnrm2+0], stream);
         err = cublasDdot(cublas, cg->r.num_nonzeros-cg->r.num_ghost_nonzeros, d_r, 1, d_r, 1, d_rnrm2sqr);
         if (err) { if (errcode) *errcode = err; gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUBLAS; }
-        acgEventRecord(tnrm2[2*nnrm2+1], 0); nnrm2++; cg->nnrm2++;
+        acgEventRecord(tnrm2[2*nnrm2+1], stream); nnrm2++; cg->nnrm2++;
         cg->nflops += 2*(cg->r.num_nonzeros-cg->r.num_ghost_nonzeros);
         cg->Bnrm2 += (cg->r.num_nonzeros-cg->r.num_ghost_nonzeros)*sizeof(*cg->r.x);
 #ifndef HOST_ALLREDUCE
         if (commsize > 1) {
-            acgEventRecord(tallreduce[2*nallreduce+0], 0);
+            acgEventRecord(tallreduce[2*nallreduce+0], stream);
             err = acgcomm_allreduce(ACG_IN_PLACE, d_rnrm2sqr, 1, ACG_DOUBLE, ACG_SUM, stream, comm, errcode);
             if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return err; }
-            acgEventRecord(tallreduce[2*nallreduce+1], 0); nallreduce++; cg->nallreduce++;
+            acgEventRecord(tallreduce[2*nallreduce+1], stream); nallreduce++; cg->nallreduce++;
             cg->Ballreduce += sizeof(*rnrm2sqr);
         }
         err = cudaEventRecord(rnrm2sqrready, stream);
@@ -953,12 +953,12 @@ int acgsolvercuda_solvempi(
         /* if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUDA; } */
 #else
         if (commsize > 1) {
-            acgEventRecord(tallreduce[2*nallreduce+0], 0);
+            acgEventRecord(tallreduce[2*nallreduce+0], stream);
             cudaMemcpy(rnrm2sqr, d_rnrm2sqr, sizeof(*d_rnrm2sqr), cudaMemcpyDeviceToHost);
             MPI_Allreduce(MPI_IN_PLACE, rnrm2sqr, 1, MPI_DOUBLE, MPI_SUM, comm->mpicomm);
             err = cudaMemcpyAsync(d_rnrm2sqr, rnrm2sqr, sizeof(*d_rnrm2sqr), cudaMemcpyHostToDevice, copystream);
             if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUDA; }
-            acgEventRecord(tallreduce[2*nallreduce+1], 0); nallreduce++; cg->nallreduce++;
+            acgEventRecord(tallreduce[2*nallreduce+1], stream); nallreduce++; cg->nallreduce++;
             cg->Ballreduce += sizeof(*rnrm2sqr);
         } else {
             err = cudaEventRecord(rnrm2sqrready, stream);
@@ -971,7 +971,7 @@ int acgsolvercuda_solvempi(
 #endif
 
         /* update solution, x = αp + x, where α = (r,r)/(p,t) */
-        acgEventRecord(taxpy[2*naxpy+0], 0);
+        acgEventRecord(taxpy[2*naxpy+0], stream);
 #ifndef NO_FUSED_KERNELS
         err = acgsolvercuda_daxpy_alpha(cg->p.num_nonzeros-cg->p.num_ghost_nonzeros, d_rnrm2sqr_prev, d_pdott, d_p, d_x);
         if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUDA; }
@@ -979,12 +979,12 @@ int acgsolvercuda_solvempi(
         err = cublasDaxpy(cublas, cg->p.num_nonzeros-cg->p.num_ghost_nonzeros, d_alpha, d_p, 1, d_x, 1);
         if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUBLAS; }
 #endif
-        acgEventRecord(taxpy[2*naxpy+1], 0); naxpy++; cg->naxpy++;
+        acgEventRecord(taxpy[2*naxpy+1], stream); naxpy++; cg->naxpy++;
         cg->nflops += 2*(cg->p.num_nonzeros-cg->p.num_ghost_nonzeros);
         cg->Baxpy += (cg->p.num_nonzeros-cg->p.num_ghost_nonzeros)*(sizeof(*cg->p.x)+sizeof(*x->x));
 
         /* update search direction, p = βp + r, where β = (rₖ,rₖ)/(rₖ₋₁,rₖₖ₋₁) */
-        acgEventRecord(taxpy[2*naxpy+0], 0);
+        acgEventRecord(taxpy[2*naxpy+0], stream);
 #ifndef NO_FUSED_KERNELS
         err = acgsolvercuda_daypx_beta(cg->p.num_nonzeros-cg->p.num_ghost_nonzeros, d_rnrm2sqr, d_rnrm2sqr_prev, d_p, d_r);
         if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return err; }
@@ -996,7 +996,7 @@ int acgsolvercuda_solvempi(
         err = cublasDaxpy(cublas, cg->p.num_nonzeros-cg->p.num_ghost_nonzeros, d_one, d_r, 1, d_p, 1);
         if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUBLAS; }
 #endif
-        acgEventRecord(taxpy[2*naxpy+1], 0); naxpy++; cg->naxpy++;
+        acgEventRecord(taxpy[2*naxpy+1], stream); naxpy++; cg->naxpy++;
         cg->nflops += 2*(cg->p.num_nonzeros-cg->p.num_ghost_nonzeros);
         cg->Baxpy += (cg->p.num_nonzeros-cg->p.num_ghost_nonzeros)*(sizeof(*cg->p.x)+sizeof(*cg->r.x));
         err = cudaEventRecord(preadytosend, stream);
@@ -1676,27 +1676,27 @@ int acgsolvercuda_solve_pipelined(
     for (int k = 0; k < maxits; k++) {
 
         /* compute residual norm (r,r) */
-        acgEventRecord(tnrm2[2*nnrm2+0], 0);
+        acgEventRecord(tnrm2[2*nnrm2+0], stream);
         err = cublasDdot(cublas, cg->r.num_nonzeros-cg->r.num_ghost_nonzeros, d_r, 1, d_r, 1, d_rnrm2sqr);
         if (err) { if (errcode) *errcode = err; gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUBLAS; }
-        acgEventRecord(tnrm2[2*nnrm2+1], 0); nnrm2++; cg->nnrm2++;
+        acgEventRecord(tnrm2[2*nnrm2+1], stream); nnrm2++; cg->nnrm2++;
         cg->nflops += 2*(cg->r.num_nonzeros-cg->r.num_ghost_nonzeros);
         cg->Bnrm2 += (cg->r.num_nonzeros-cg->r.num_ghost_nonzeros)*sizeof(*cg->r.x);
 
         /* compute (w,r) */
-        acgEventRecord(tdot[2*ndot+0], 0);
+        acgEventRecord(tdot[2*ndot+0], stream);
         err = cublasDdot(cublas, cg->w->num_nonzeros-cg->w->num_ghost_nonzeros, d_w, 1, d_r, 1, d_delta);
         if (err) { if (errcode) *errcode = err; gettime(&t1); cg->tsolve += elapsed(t0,t1); return ACG_ERR_CUBLAS; }
-        acgEventRecord(tdot[2*ndot+1], 0); ndot++; cg->ndot++;
+        acgEventRecord(tdot[2*ndot+1], stream); ndot++; cg->ndot++;
         cg->nflops += 2*(cg->w->num_nonzeros-cg->w->num_ghost_nonzeros);
         cg->Bdot += (cg->w->num_nonzeros-cg->w->num_ghost_nonzeros)*(sizeof(*cg->w->x)+sizeof(*cg->r.x));
 
         /* perform a single reduction for the two dot products */
         if (commsize > 1) {
-            acgEventRecord(tallreduce[2*nallreduce+0], 0);
+            acgEventRecord(tallreduce[2*nallreduce+0], stream);
             err = acgcomm_allreduce(ACG_IN_PLACE, d_rnrm2sqr, 2, ACG_DOUBLE, ACG_SUM, stream, comm, errcode);
             if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return err; }
-            acgEventRecord(tallreduce[2*nallreduce+1], 0); nallreduce++; cg->nallreduce++;
+            acgEventRecord(tallreduce[2*nallreduce+1], stream); nallreduce++; cg->nallreduce++;
             cg->Ballreduce += 2*sizeof(*d_rnrm2sqr);
         }
 
@@ -1772,13 +1772,13 @@ int acgsolvercuda_solve_pipelined(
         }
 
         /* update vectors */
-        acgEventRecord(taxpy[2*naxpy+0], 0);
+        acgEventRecord(taxpy[2*naxpy+0], stream);
         err = acgsolvercuda_pipelined_daxpy_fused(
             cg->t.num_nonzeros-cg->t.num_ghost_nonzeros,
             d_rnrm2sqr, d_rnrm2sqr_prev, d_delta,
             d_q, d_p, d_r, d_t, d_x, d_z, d_w, d_alpha, stream);
         if (err) { gettime(&t1); cg->tsolve += elapsed(t0,t1); return err; }
-        acgEventRecord(taxpy[2*naxpy+1], 0);
+        acgEventRecord(taxpy[2*naxpy+1], stream);
         naxpy++; cg->naxpy++;
         cg->nflops += 12*(cg->t.num_nonzeros-cg->t.num_ghost_nonzeros);
         cg->Baxpy += 7*(cg->p.num_nonzeros-cg->p.num_ghost_nonzeros)*sizeof(*cg->p.x);
@@ -1905,21 +1905,21 @@ int acgsolvercuda_fwrite(
     findent(f,indent); fprintf(f, "total flop rate: %'.3f Gflop/s\n", cg->tsolve > 0 ? 1.0e-9*cg->nflops/cg->tsolve : 0);
     findent(f,indent); fprintf(f, "total solver time: %'.6f seconds\n", cg->tsolve);
     findent(f,indent); fprintf(f, "performance breakdown:\n");
-    findent(f,indent); fprintf(f, "  gemv: %'.6f seconds %'"PRId64" times %'"PRId64" B %'.3f GB/s\n",
-                               cg->tgemv, cg->ngemv, cg->Bgemv, cg->tgemv>0 ? 1.0e-9*cg->Bgemv/cg->tgemv : 0.0);
-    findent(f,indent); fprintf(f, "  dot: %'.6f seconds %'"PRId64" times %'"PRId64" B %'.3f GB/s\n",
-                               cg->tdot, cg->ndot, cg->Bdot, cg->tdot>0 ? 1.0e-9*cg->Bdot/cg->tdot : 0.0);
-    findent(f,indent); fprintf(f, "  nrm2: %'.6f seconds %'"PRId64" times %'"PRId64" B %'.3f GB/s\n",
-                               cg->tnrm2, cg->nnrm2, cg->Bnrm2, cg->tnrm2>0 ? 1.0e-9*cg->Bnrm2/cg->tnrm2 : 0.0);
-    findent(f,indent); fprintf(f, "  axpy: %'.6f seconds %'"PRId64" times %'"PRId64" B %'.3f GB/s\n",
-                               cg->taxpy, cg->naxpy, cg->Baxpy, cg->taxpy>0 ? 1.0e-9*cg->Baxpy/cg->taxpy : 0.0);
-    findent(f,indent); fprintf(f, "  copy: %'.6f seconds %'"PRId64" times %'"PRId64" B %'.3f GB/s\n",
-                               cg->tcopy, cg->ncopy, cg->Bcopy, cg->tcopy>0 ? 1.0e-9*cg->Bcopy/cg->tcopy : 0.0);
-    findent(f,indent); fprintf(f, "  MPI_Allreduce: %'.6f seconds %'"PRId64" times %'"PRId64" B %'.3f GB/s\n",
-                               cg->tallreduce, cg->nallreduce, cg->Ballreduce, cg->tallreduce>0.0 ? 1.0e-9*cg->Ballreduce/cg->tallreduce : 0.0);
-    findent(f,indent); fprintf(f, "  MPI_HaloExchange: %'.6f seconds %'"PRId64" times %'"PRId64" B %'.3f GB/s\n",
-                               cg->thalo, cg->nhalo, cg->Bhalo, cg->thalo>0.0 ? 1.0e-9*cg->Bhalo/cg->thalo : 0.0);
-    findent(f,indent); fprintf(f, "  other: %'.6f seconds\n", tother);
+    findent(f,indent); fprintf(f, "  gemv: %'.6f ms %'"PRId64" times %'"PRId64" B %'.3f GB/s\n",
+                               1.0e3*cg->tgemv, cg->ngemv, cg->Bgemv, cg->tgemv>0 ? 1.0e-9*cg->Bgemv/cg->tgemv : 0.0);
+    findent(f,indent); fprintf(f, "  dot: %'.6f ms %'"PRId64" times %'"PRId64" B %'.3f GB/s\n",
+                               1.0e3*cg->tdot, cg->ndot, cg->Bdot, cg->tdot>0 ? 1.0e-9*cg->Bdot/cg->tdot : 0.0);
+    findent(f,indent); fprintf(f, "  nrm2: %'.6f ms %'"PRId64" times %'"PRId64" B %'.3f GB/s\n",
+                               1.0e3*cg->tnrm2, cg->nnrm2, cg->Bnrm2, cg->tnrm2>0 ? 1.0e-9*cg->Bnrm2/cg->tnrm2 : 0.0);
+    findent(f,indent); fprintf(f, "  axpy: %'.6f ms %'"PRId64" times %'"PRId64" B %'.3f GB/s\n",
+                               1.0e3*cg->taxpy, cg->naxpy, cg->Baxpy, cg->taxpy>0 ? 1.0e-9*cg->Baxpy/cg->taxpy : 0.0);
+    findent(f,indent); fprintf(f, "  copy: %'.6f ms %'"PRId64" times %'"PRId64" B %'.3f GB/s\n",
+                               1.0e3*cg->tcopy, cg->ncopy, cg->Bcopy, cg->tcopy>0 ? 1.0e-9*cg->Bcopy/cg->tcopy : 0.0);
+    findent(f,indent); fprintf(f, "  MPI_Allreduce: %'.6f ms %'"PRId64" times %'"PRId64" B %'.3f GB/s\n",
+                               1.0e3*cg->tallreduce, cg->nallreduce, cg->Ballreduce, cg->tallreduce>0.0 ? 1.0e-9*cg->Ballreduce/cg->tallreduce : 0.0);
+    findent(f,indent); fprintf(f, "  MPI_HaloExchange: %'.6f ms %'"PRId64" times %'"PRId64" B %'.3f GB/s\n",
+                               1.0e3*cg->thalo, cg->nhalo, cg->Bhalo, cg->thalo>0.0 ? 1.0e-9*cg->Bhalo/cg->thalo : 0.0);
+    findent(f,indent); fprintf(f, "  other: %'.6f ms\n", 1.0e3*tother);
     findent(f,indent); fprintf(f, "last solve:\n");
     findent(f,indent); fprintf(f, "  stopping criterion:\n");
     findent(f,indent); fprintf(f, "    maximum iterations: %'d\n", cg->maxits);
@@ -2014,21 +2014,21 @@ int acgsolvercuda_fwritempi(
         findent(f,indent); fprintf(f, "total flop rate: %'.3f Gflop/s\n", tsolve > 0 ? 1.0e-9*nflops/tsolve : 0);
         findent(f,indent); fprintf(f, "total solver time: %'.6f seconds\n", tsolve);
         findent(f,indent); fprintf(f, "performance breakdown:\n");
-        findent(f,indent); fprintf(f, "  gemv: %'.6f seconds/proc %'"PRId64" times/proc %'"PRId64" B/proc %'.3f GB/s/proc\n",
-                                   tgemv, ngemv, Bgemv, tgemv>0.0 ? 1.0e-9*Bgemv/tgemv : 0.0);
-        findent(f,indent); fprintf(f, "  dot: %'.6f seconds/proc %'"PRId64" times/proc %'"PRId64" B/proc %'.3f GB/s/proc\n",
-                                   tdot, ndot, Bdot, tdot>0.0 ? 1.0e-9*Bdot/tdot : 0.0);
-        findent(f,indent); fprintf(f, "  nrm2: %'.6f seconds/proc %'"PRId64" times/proc %'"PRId64" B/proc %'.3f GB/s/proc\n",
-                                   tnrm2, nnrm2, Bnrm2, tnrm2>0.0 ? 1.0e-9*Bnrm2/tnrm2 : 0.0);
-        findent(f,indent); fprintf(f, "  axpy: %'.6f seconds/proc %'"PRId64" times/proc %'"PRId64" B/proc %'.3f GB/s/proc\n",
-                                   taxpy, naxpy, Baxpy, taxpy>0.0 ? 1.0e-9*Baxpy/taxpy : 0.0);
-        findent(f,indent); fprintf(f, "  copy: %'.6f seconds/proc %'"PRId64" times/proc %'"PRId64" B/proc %'.3f GB/s/proc\n",
-                                   tcopy, ncopy, Bcopy, tcopy>0.0 ? 1.0e-9*Bcopy/tcopy : 0.0);
-        findent(f,indent); fprintf(f, "  allreduce: %'.6f seconds/proc %'"PRId64" times/proc %'"PRId64" B/proc %'.3f GB/s/proc %'.3f us/op/proc\n",
-                                   tallreduce, nallreduce, Ballreduce, tallreduce>0.0 ? 1.0e-9*Ballreduce/tallreduce : 0.0,
+        findent(f,indent); fprintf(f, "  gemv: %'.6f ms/proc %'"PRId64" times/proc %'"PRId64" B/proc %'.3f GB/s/proc\n",
+                                   1.0e3*tgemv, ngemv, Bgemv, tgemv>0.0 ? 1.0e-9*Bgemv/tgemv : 0.0);
+        findent(f,indent); fprintf(f, "  dot: %'.6f ms/proc %'"PRId64" times/proc %'"PRId64" B/proc %'.3f GB/s/proc\n",
+                                   1.0e3*tdot, ndot, Bdot, tdot>0.0 ? 1.0e-9*Bdot/tdot : 0.0);
+        findent(f,indent); fprintf(f, "  nrm2: %'.6f ms/proc %'"PRId64" times/proc %'"PRId64" B/proc %'.3f GB/s/proc\n",
+                                   1.0e3*tnrm2, nnrm2, Bnrm2, tnrm2>0.0 ? 1.0e-9*Bnrm2/tnrm2 : 0.0);
+        findent(f,indent); fprintf(f, "  axpy: %'.6f ms/proc %'"PRId64" times/proc %'"PRId64" B/proc %'.3f GB/s/proc\n",
+                                   1.0e3*taxpy, naxpy, Baxpy, taxpy>0.0 ? 1.0e-9*Baxpy/taxpy : 0.0);
+        findent(f,indent); fprintf(f, "  copy: %'.6f ms/proc %'"PRId64" times/proc %'"PRId64" B/proc %'.3f GB/s/proc\n",
+                                   1.0e3*tcopy, ncopy, Bcopy, tcopy>0.0 ? 1.0e-9*Bcopy/tcopy : 0.0);
+        findent(f,indent); fprintf(f, "  allreduce: %'.6f ms/proc %'"PRId64" times/proc %'"PRId64" B/proc %'.3f GB/s/proc %'.3f us/op/proc\n",
+                                   1.0e3*tallreduce, nallreduce, Ballreduce, tallreduce>0.0 ? 1.0e-9*Ballreduce/tallreduce : 0.0,
                                    nallreduce>0.0 ? 1.0e6*tallreduce/nallreduce : 0.0);
-        findent(f,indent); fprintf(f, "  haloexchange: %'.6f seconds/proc %'"PRId64" times/proc %'"PRId64" B/proc %'.3f GB/s/proc %'.1f msg/proc %'.3f us/msg/proc\n",
-                                   thalo, nhalo, Bhalo, thalo>0.0 ? 1.0e-9*Bhalo/thalo : 0.0,
+        findent(f,indent); fprintf(f, "  haloexchange: %'.6f ms/proc %'"PRId64" times/proc %'"PRId64" B/proc %'.3f GB/s/proc %'.1f msg/proc %'.3f us/msg/proc\n",
+                                   1.0e3*thalo, nhalo, Bhalo, thalo>0.0 ? 1.0e-9*Bhalo/thalo : 0.0,
                                    ((double) nhalomsgs)/commsize, nhalomsgs>0.0 ? 1.0e6*thalo/nhalomsgs/commsize : 0.0);
     }
 
@@ -2195,7 +2195,7 @@ int acgsolvercuda_fwritempi(
     }
 
     if (rank == root) {
-        findent(f,indent); fprintf(f, "  other: %'.6f seconds\n", tother);
+        findent(f,indent); fprintf(f, "  other: %'.6f ms\n", 1.0e3*tother);
         findent(f,indent); fprintf(f, "last solve:\n");
         findent(f,indent); fprintf(f, "  stopping criterion:\n");
         findent(f,indent); fprintf(f, "    maximum iterations: %'d\n", cg->maxits);

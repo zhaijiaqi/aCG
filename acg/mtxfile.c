@@ -1500,6 +1500,13 @@ int mtxfile_fwrite_double(
     } else if (object == mtxvector) {
         if (format == mtxarray) {
             if (!binary) {
+                /* NOTE: 禁用逐元素输出（每个元素一行）的数据区写出。
+                 *
+                 * 这会导致输出的 MatrixMarket 文件只有 header/comment/size line，
+                 * 不包含数据行（例如 solver 的解向量值）。
+                 * 如需恢复，请删除/修改下面的 #if 0 块。
+                 */
+#if 0
                 if (numfmt) {
                     for (int64_t i = 0; i < nnz; i++) {
                         for (int j = 0; j < nvalspernz; j++) {
@@ -1517,6 +1524,7 @@ int mtxfile_fwrite_double(
                         fputc('\n', f); n++;
                     }
                 }
+#endif
             } else { err = ENOTSUP; goto fwrite_exit; }
         } else if (format == mtxcoordinate) {
             if (!binary) {
